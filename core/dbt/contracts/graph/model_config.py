@@ -7,7 +7,8 @@ from dbt.dataclass_schema import (
     ValidationError,
     register_pattern,
 )
-from dbt.contracts.graph.unparsed import AdditionalPropertiesAllowed
+from dbt.contracts.graph.unparsed import AdditionalPropertiesAllowed, Docs
+from dbt.contracts.graph.utils import validate_color
 from dbt.exceptions import InternalException, CompilationException
 from dbt.contracts.util import Replaceable, list_str
 from dbt import hooks
@@ -66,6 +67,7 @@ class MergeBehavior(Metadata):
     Append = 1
     Update = 2
     Clobber = 3
+    DictKeyAppend = 4
 
     @classmethod
     def default_field(cls) -> "MergeBehavior":
@@ -124,6 +126,9 @@ def _listify(value: Any) -> List:
         return [value]
 
 
+# There are two versions of this code. The one here is for config
+# objects, the one in _add_config_call in context_config.py is for
+# config_call_dict dictionaries.
 def _merge_field_value(
     merge_behavior: MergeBehavior,
     self_value: Any,
@@ -141,6 +146,31 @@ def _merge_field_value(
         value = self_value.copy()
         value.update(other_value)
         return value
+    elif merge_behavior == MergeBehavior.DictKeyAppend:
+        if not isinstance(self_value, dict):
+            raise InternalException(f"expected dict, got {self_value}")
+        if not isinstance(other_value, dict):
+            raise InternalException(f"expected dict, got {other_value}")
+        new_dict = {}
+        for key in self_value.keys():
+            new_dict[key] = _listify(self_value[key])
+        for key in other_value.keys():
+            extend = False
+            new_key = key
+            # This might start with a +, to indicate we should extend the list
+            # instead of just clobbering it
+            if new_key.startswith("+"):
+                new_key = key.lstrip("+")
+                extend = True
+            if new_key in new_dict and extend:
+                # extend the list
+                value = other_value[key]
+                new_dict[new_key].extend(_listify(value))
+            else:
+                # clobber the list
+                new_dict[new_key] = _listify(other_value[key])
+        return new_dict
+
     else:
         raise InternalException(f"Got an invalid merge_behavior: {merge_behavior}")
 
@@ -256,7 +286,8 @@ class BaseConfig(AdditionalPropertiesAllowed, Replaceable):
     # 'meta' moved here from node
     mergebehavior = {
         "append": ["pre-hook", "pre_hook", "post-hook", "post_hook", "tags"],
-        "update": ["quoting", "column_types", "meta"],
+        "update": ["quoting", "column_types", "meta", "docs"],
+        "dict_key_append": ["grants"],
     }
 
     @classmethod
@@ -403,6 +434,7 @@ class NodeConfig(NodeAndTestConfig):
     # Note: if any new fields are added with MergeBehavior, also update the
     # 'mergebehavior' dictionary
     materialized: str = "view"
+    incremental_strategy: Optional[str] = None
     persist_docs: Dict[str, Any] = field(default_factory=dict)
     post_hook: List[Hook] = field(
         default_factory=list,
@@ -427,6 +459,27 @@ class NodeConfig(NodeAndTestConfig):
     # sometimes getting the Union order wrong, causing serialization failures.
     unique_key: Union[str, List[str], None] = None
     on_schema_change: Optional[str] = "ignore"
+    grants: Dict[str, Any] = field(
+        default_factory=dict, metadata=MergeBehavior.DictKeyAppend.meta()
+    )
+    packages: List[str] = field(
+        default_factory=list,
+        metadata=MergeBehavior.Append.meta(),
+    )
+    docs: Docs = field(
+        default_factory=Docs,
+        metadata=MergeBehavior.Update.meta(),
+    )
+
+    # we validate that node_color has a suitable value to prevent dbt-docs from crashing
+    def __post_init__(self):
+        if self.docs.node_color:
+            node_color = self.docs.node_color
+            if not validate_color(node_color):
+                raise ValidationError(
+                    f"Invalid color name for docs.node_color: {node_color}. "
+                    "It is neither a valid HTML color name nor a valid HEX code."
+                )
 
     @classmethod
     def __pre_deserialize__(cls, data):

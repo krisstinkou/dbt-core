@@ -185,7 +185,11 @@ def dbt_project_yml(project_root, project_config_update, logs_dir):
         "log-path": logs_dir,
     }
     if project_config_update:
-        project_config.update(project_config_update)
+        if isinstance(project_config_update, dict):
+            project_config.update(project_config_update)
+        elif isinstance(project_config_update, str):
+            updates = yaml.safe_load(project_config_update)
+            project_config.update(updates)
     write_file(yaml.safe_dump(project_config), project_root, "dbt_project.yml")
     return project_config
 
@@ -263,7 +267,7 @@ def write_project_files(project_root, dir_name, file_dict):
 def write_project_files_recursively(path, file_dict):
     if type(file_dict) is not dict:
         raise TestProcessingException(f"File dict is not a dict: '{file_dict}' for path '{path}'")
-    suffix_list = [".sql", ".csv", ".md", ".txt"]
+    suffix_list = [".sql", ".csv", ".md", ".txt", ".py"]
     for name, value in file_dict.items():
         if name.endswith(".yml") or name.endswith(".yaml"):
             if isinstance(value, str):
