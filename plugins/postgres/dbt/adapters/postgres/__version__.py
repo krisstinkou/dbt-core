@@ -1,1 +1,1 @@
-version = "1.2.2epam6"
+version = "1.2.2epam7"
